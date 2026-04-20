@@ -179,7 +179,11 @@ public:
         .set_scratch_size(SCRATCH_LEVEL, Kokkos::PerTeam(this->scratch_size));
     };
 
-    if( hydro_patch_launch_policy == HydroPatchLaunchPolicy::AUTO )
+    /* When a Kokkos tuning tool is attached, keep the patch policy tunable so
+     * APEX sees the bucketed HydroE::Patch_octs_* contexts and can replay
+     * cached team/vector choices for them. */
+    if( Kokkos::Tools::Experimental::have_tuning_tool() ||
+        hydro_patch_launch_policy == HydroPatchLaunchPolicy::AUTO )
       return make_auto_policy();
 
     // Fixed CUDA launch settings replayed from apex_converged_tuning.0.yaml.
