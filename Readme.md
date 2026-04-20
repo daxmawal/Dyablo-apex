@@ -3,7 +3,7 @@
 ## Build
 
 ```bash
-git clone --branch final_test_sod_3d_max_lvl7 --single-branch https://github.com/daxmawal/Dyablo-apex.git
+git clone --branch scratch_test_sod_3d_max_lvl7 --single-branch https://github.com/daxmawal/Dyablo-apex.git
 cd Dyablo-apex
 git submodule update --init --recursive
 
