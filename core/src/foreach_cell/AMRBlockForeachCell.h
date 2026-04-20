@@ -199,7 +199,7 @@ public:
       configMap.getValue<real_t>("mesh", "zmax", 1),
       configMap.getValue<uint32_t>("amr", "nbOctsPerGroup", 1024)
     },
-    patchmanager(cdata, pmesh)
+    patchmanager(cdata, pmesh, configMap)
   {}
 
   int getDim() const 

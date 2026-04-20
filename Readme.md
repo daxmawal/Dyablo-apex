@@ -44,5 +44,19 @@ APEX_KOKKOS_TUNING=1 \
 APEX_KOKKOS_TUNING_POLICY=simulated_annealing \
 APEX_KOKKOS_TUNING_WINDOW=5 \
 APEX_KOKKOS_VERBOSE=1 \
+./dyablo  \
+  --dyablo-hydro-patch-replay-pass-count=1 \
+  test_sod_3D.ini
+```
+
+## Run Optimized Example
+
+```bash
 ./dyablo test_sod_3D.ini
+```
+
+## Run Reference Example
+
+```bash
+./dyablo --dyablo-hydro-patch-policy=auto test_sod_3D.ini
 ```

@@ -74,7 +74,7 @@ class Hyperbolic_euler : public HyperbolicUpdate {
 public:
   using PrimState = typename Policy::PrimState;
   using ConsState = typename Policy::ConsState;
-  static constexpr int hydro_patch_replay_pass_count = 100;
+  static constexpr int default_hydro_patch_replay_pass_count = 100;
 
 public:
   Hyperbolic_euler(
@@ -88,8 +88,18 @@ public:
     ndim(configMap.getValue<int>("mesh", "ndim", 3)),
     smallr( configMap.getValue<real_t>("hydro","smallr", 1e-10) ),
     smallp( configMap.getValue<real_t>("hydro","smallp", 1e-10) ),
-    slope_enabled( configMap.getValue<bool>("hydro","slope_enabled", true) )
-  { }
+    slope_enabled( configMap.getValue<bool>("hydro","slope_enabled", true) ),
+    hydro_patch_replay_pass_count( configMap.getValue<int>(
+      "hydro",
+      "hydro_patch_replay_pass_count",
+      default_hydro_patch_replay_pass_count) )
+  {
+    DYABLO_ASSERT_HOST_RELEASE(
+      hydro_patch_replay_pass_count > 0,
+      "hydro/hydro_patch_replay_pass_count must be strictly positive, got "
+      << hydro_patch_replay_pass_count
+    );
+  }
 
   /**
    * @brief Solves hydro for one step using the euler method
@@ -354,6 +364,7 @@ private:
   int ndim;
   real_t smallr, smallp;
   bool slope_enabled;
+  int hydro_patch_replay_pass_count;
 };
 
 } // namespace dyablo

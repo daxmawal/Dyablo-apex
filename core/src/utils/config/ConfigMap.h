@@ -471,6 +471,18 @@ public:
     return (_values.count(section) != 0) && (_values.at(section).count(name) != 0);
   }
 
+  template< typename T >
+  void setValue( std::string section, std::string name, const T& value, bool from_file = true )
+  {
+    section = tolower(section);
+    name = tolower(name);
+
+    value_container& val = _values[section][name];
+    val.value = Impl::to_string(value);
+    val.from_file = from_file;
+    val.used = false;
+  }
+
   /**
    * Write configured .ini in o
    * 

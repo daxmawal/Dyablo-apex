@@ -100,7 +100,7 @@ private:
   const AMRmesh& pmesh;
 
 public:
-  PatchManager(const CData& cdata, const AMRmesh& pmesh)
+  PatchManager(const CData& cdata, const AMRmesh& pmesh, ConfigMap& /*configMap*/)
   : cdata(cdata), pmesh(pmesh)
   {}
 

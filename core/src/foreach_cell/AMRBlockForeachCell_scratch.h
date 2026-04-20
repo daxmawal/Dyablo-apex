@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
+
 #include "foreach_cell/AMRBlockForeachCell.h"
 
 #define PATCH_LAMBDA KOKKOS_LAMBDA
@@ -14,6 +17,33 @@ namespace AMRBlockForeachCell_scratch_impl{
 using namespace AMRBlockForeachCell_CellArray_impl;
 using CData = AMRBlockForeachCell_CData;
 using policy_t = Kokkos::TeamPolicy<>;
+
+enum class HydroPatchLaunchPolicy { OPTIMIZED, AUTO };
+
+inline std::string to_lower_copy(std::string value)
+{
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c)
+  {
+    return static_cast<char>(std::tolower(c));
+  });
+  return value;
+}
+
+inline HydroPatchLaunchPolicy hydro_patch_launch_policy_from_string(std::string value)
+{
+  value = to_lower_copy(value);
+  if( value == "optimized" )
+    return HydroPatchLaunchPolicy::OPTIMIZED;
+  if( value == "auto" )
+    return HydroPatchLaunchPolicy::AUTO;
+
+  DYABLO_ASSERT_HOST_RELEASE(
+    false,
+    "Invalid value for hydro/hydro_patch_launch_policy : `" << value
+    << "`. Expected `optimized` or `auto`."
+  );
+  return HydroPatchLaunchPolicy::OPTIMIZED;
+}
 
 class PatchManager;
 
@@ -112,10 +142,14 @@ private:
   const CData cdata;
   const AMRmesh& pmesh;
   uint32_t scratch_size = 0;
+  HydroPatchLaunchPolicy hydro_patch_launch_policy;
 
 public:
-  PatchManager(const CData& cdata, const AMRmesh& pmesh)
-  : cdata(cdata), pmesh(pmesh)
+  PatchManager(const CData& cdata, const AMRmesh& pmesh, ConfigMap& configMap)
+  : cdata(cdata),
+    pmesh(pmesh),
+    hydro_patch_launch_policy(hydro_patch_launch_policy_from_string(
+      configMap.getValue<std::string>("hydro", "hydro_patch_launch_policy", "optimized")))
   {}
 
   CellArray_patch::Ref reserve_patch_tmp(std::string name, int gx, int gy, int gz, int nvars)
@@ -139,6 +173,15 @@ public:
         .set_scratch_size(SCRATCH_LEVEL, Kokkos::PerTeam(this->scratch_size));
     };
 
+    auto make_auto_policy = [&]()
+    {
+      return policy_t(nbOcts, Kokkos::AUTO(), Kokkos::AUTO())
+        .set_scratch_size(SCRATCH_LEVEL, Kokkos::PerTeam(this->scratch_size));
+    };
+
+    if( hydro_patch_launch_policy == HydroPatchLaunchPolicy::AUTO )
+      return make_auto_policy();
+
     // Fixed CUDA launch settings replayed from apex_converged_tuning.0.yaml.
     if( kernel_name == "HydroE::Patch_octs_4k_8k" )
       return make_fixed_policy(16, 2);
@@ -152,8 +195,7 @@ public:
     if( kernel_name == "HydroE::Patch_octs_32k_64k" )
       return make_fixed_policy(16, 4);
 
-    return policy_t(nbOcts, Kokkos::AUTO(), Kokkos::AUTO())
-      .set_scratch_size(SCRATCH_LEVEL, Kokkos::PerTeam(this->scratch_size));
+    return make_auto_policy();
   }
   
   template <typename Function>
