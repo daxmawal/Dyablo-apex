@@ -15,6 +15,8 @@ include(initBuildType)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(FetchContent)
+include(ExternalProject)
+include(GNUInstallDirs)
 
 # C++14 is for Kokkos
 set(CMAKE_CXX_STANDARD 20)
@@ -26,9 +28,17 @@ option (DYABLO_USE_MPI "Activate / want MPI build" ON)
 option (DYABLO_USE_HDF5 "build HDF5 input/output support" ON)
 option (DYABLO_USE_MPI_CUDA_AWARE_ENFORCED "Some MPI cuda-aware implementation are not well detected; use this to enforce" OFF)
 option (DYABLO_USE_INTERNAL_KOKKOS "Use internal Kokkos from external/kokkos" ON)
+option (DYABLO_ENABLE_APEX "Build the APEX Kokkos tool" OFF)
+set(DYABLO_APEX_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../external/apex" CACHE PATH
+    "Path to a local APEX checkout")
+set(DYABLO_APEX_GIT_REPOSITORY "" CACHE STRING
+    "Optional APEX Git repository to clone instead of using DYABLO_APEX_SOURCE_DIR")
+set(DYABLO_APEX_GIT_TAG "" CACHE STRING
+    "APEX Git tag, branch, or commit to use with DYABLO_APEX_GIT_REPOSITORY")
 option (Kokkos_ENABLE_CUDA   "enable Kokkos::Cuda backend" OFF)
 option (Kokkos_ENABLE_HIP   "enable Kokkos::HIP backend" OFF)
 option (Kokkos_ENABLE_SYCL   "enable Kokkos::SyCL backend" OFF)
+option (Kokkos_ENABLE_TUNING "Create bindings for Kokkos tuning tools" OFF)
 option (Kokkos_ENABLE_IMPL_CUDA_MALLOC_ASYNC "Use CudaMallocAsync for Kokkos allocations" OFF)
 set    (Kokkos_DIR "Kokkos installation directory or internal source" CACHE PATH ""  )
 
@@ -41,6 +51,11 @@ option (DYABLO_USE_FPE_DEBUG "build with floating point Nan tracing (signal hand
 option (Kokkos_ENABLE_OPENMP "enable Kokkos::OpenMP backend" ON)
 set (Kokkos_ENABLE_CUDA_LAMBDA ${Kokkos_ENABLE_CUDA} CACHE BOOL "Enable use of cuda lambdas" FORCE)
 set (Kokkos_ENABLE_CUDA_CONSTEXPR ${Kokkos_ENABLE_CUDA} CACHE BOOL "Enable use of cuda constexpr" FORCE)
+
+if(DYABLO_ENABLE_APEX AND NOT Kokkos_ENABLE_TUNING)
+  message(STATUS "Forcing Kokkos_ENABLE_TUNING=ON because DYABLO_ENABLE_APEX is ON")
+  set(Kokkos_ENABLE_TUNING ON CACHE BOOL "Create bindings for Kokkos tuning tools" FORCE)
+endif()
 
 # Use CMAKE_DL_LIBS to find the dl library
 set( LIBDL_LIBRARY CACHE STRING "LIBDL library" "${CMAKE_DL_LIBS}" )
@@ -61,6 +76,36 @@ else( DYABLO_USE_INTERNAL_KOKKOS )
     # kokkos_check is defined in KokkosConfigCommon.cmake
     kokkos_check( DEVICES "Cuda" )
     kokkos_check( OPTIONS CUDA_LAMBDA)
+  endif()
+endif()
+
+set(DYABLO_APEX_CUDA_CMAKE_ARGS)
+if(Kokkos_ENABLE_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  get_filename_component(DYABLO_CUDATOOLKIT_ROOT "${CUDAToolkit_BIN_DIR}/.." ABSOLUTE)
+  set(DYABLO_APEX_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+  list(APPEND DYABLO_APEX_CUDA_CMAKE_ARGS
+    -DCUDAToolkit_ROOT=${DYABLO_CUDATOOLKIT_ROOT}
+  )
+  if(CMAKE_CUDA_COMPILER)
+    get_filename_component(DYABLO_CUDA_COMPILER_BIN_DIR "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+    list(APPEND DYABLO_APEX_CUDA_CMAKE_ARGS
+      -DCMAKE_CUDA_COMPILER=${CMAKE_CUDA_COMPILER}
+    )
+  endif()
+  find_path(DYABLO_NVTX_INCLUDE_DIR
+    NAMES nvToolsExt.h
+    HINTS
+      "${DYABLO_CUDATOOLKIT_ROOT}/include"
+      "${DYABLO_CUDATOOLKIT_ROOT}/include/nvtx3"
+      "${DYABLO_CUDA_COMPILER_BIN_DIR}/../include-stdpar/nvtx3"
+  )
+  if(DYABLO_NVTX_INCLUDE_DIR)
+    string(APPEND DYABLO_APEX_CXX_FLAGS " -I${DYABLO_NVTX_INCLUDE_DIR}")
+    list(APPEND DYABLO_APEX_CUDA_CMAKE_ARGS
+      -DCMAKE_CXX_FLAGS=${DYABLO_APEX_CXX_FLAGS}
+    )
+    message(STATUS "Using NVTX headers from ${DYABLO_NVTX_INCLUDE_DIR} for APEX")
   endif()
 endif()
 
@@ -158,6 +203,64 @@ FetchContent_Declare( backward-cpp_external
 # Import kokkos targets
 FetchContent_MakeAvailable(backward-cpp_external)
 
+set(DYABLO_APEX_LIBRARY_PATH "")
+if(DYABLO_ENABLE_APEX)
+  if(DYABLO_APEX_GIT_REPOSITORY AND NOT DYABLO_APEX_GIT_TAG)
+    message(FATAL_ERROR
+      "DYABLO_APEX_GIT_TAG must be set when DYABLO_APEX_GIT_REPOSITORY is used.")
+  endif()
+  if(NOT DYABLO_APEX_GIT_REPOSITORY AND NOT EXISTS "${DYABLO_APEX_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+      "DYABLO_ENABLE_APEX=ON requires either a local APEX checkout at "
+      "'${DYABLO_APEX_SOURCE_DIR}' or DYABLO_APEX_GIT_REPOSITORY/DYABLO_APEX_GIT_TAG.")
+  endif()
+
+  set(DYABLO_APEX_INSTALL_DIR "${CMAKE_BINARY_DIR}/apex/install")
+  set(DYABLO_APEX_LIBRARY_PATH
+      "${DYABLO_APEX_INSTALL_DIR}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}apex${CMAKE_SHARED_LIBRARY_SUFFIX}")
+  set(DYABLO_APEX_KOKKOS_DIR "${CMAKE_BINARY_DIR}/cmake_packages/Kokkos")
+  set(DYABLO_APEX_EXTERNALPROJECT_SOURCE_ARGS)
+  if(DYABLO_APEX_GIT_REPOSITORY)
+    message(STATUS
+      "Fetching APEX from ${DYABLO_APEX_GIT_REPOSITORY} (${DYABLO_APEX_GIT_TAG})")
+    list(APPEND DYABLO_APEX_EXTERNALPROJECT_SOURCE_ARGS
+      GIT_REPOSITORY ${DYABLO_APEX_GIT_REPOSITORY}
+      GIT_TAG ${DYABLO_APEX_GIT_TAG}
+      GIT_SHALLOW TRUE
+    )
+  else()
+    message(STATUS "Using local APEX checkout from ${DYABLO_APEX_SOURCE_DIR}")
+    list(APPEND DYABLO_APEX_EXTERNALPROJECT_SOURCE_ARGS
+      SOURCE_DIR ${DYABLO_APEX_SOURCE_DIR}
+    )
+  endif()
+
+  ExternalProject_Add(apex
+    ${DYABLO_APEX_EXTERNALPROJECT_SOURCE_ARGS}
+    BINARY_DIR ${CMAKE_BINARY_DIR}/apex/build
+    CMAKE_ARGS
+      -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+      -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -DCMAKE_INSTALL_PREFIX=${DYABLO_APEX_INSTALL_DIR}
+      -DCMAKE_INSTALL_LIBDIR=lib
+      -DAPEX_BUILD_TESTS=OFF
+      -DAPEX_BUILD_EXAMPLES=OFF
+      -DAPEX_WITH_KOKKOS=ON
+      -DAPEX_WITH_MPI=OFF
+      -DAPEX_WITH_OMPT=OFF
+      -DAPEX_WITH_CUDA=${Kokkos_ENABLE_CUDA}
+      -DAPEX_WITH_HIP=${Kokkos_ENABLE_HIP}
+      -DAPEX_WITH_LEVEL0=OFF
+      -DAPEX_WITH_PLUGINS=OFF
+      -DKokkos_DIR=${DYABLO_APEX_KOKKOS_DIR}
+      ${DYABLO_APEX_CUDA_CMAKE_ARGS}
+    BUILD_BYPRODUCTS ${DYABLO_APEX_LIBRARY_PATH}
+    INSTALL_DIR ${DYABLO_APEX_INSTALL_DIR}
+    INSTALL_COMMAND ${CMAKE_COMMAND} --build . --target install
+  )
+endif()
+
 # common flags
 if (Kokkos_ENABLE_CUDA)
   add_compile_options(-DCUDA)
@@ -220,8 +323,13 @@ if (Kokkos_FOUND)
   message("  Kokkos_ENABLE_SYCL=${Kokkos_ENABLE_SYCL}")
   message("  Kokkos_ENABLE_IMPL_CUDA_MALLOC_ASYNC=${Kokkos_ENABLE_IMPL_CUDA_MALLOC_ASYNC}")
   message("  Kokkos_ENABLE_HIP=${Kokkos_ENABLE_HIP}")
+  message("  Kokkos_ENABLE_TUNING=${Kokkos_ENABLE_TUNING}")
   message("  Kokkos_ARCH=${Kokkos_ARCH}")
 endif(Kokkos_FOUND)
+if (DYABLO_ENABLE_APEX)
+  message("  APEX enabled")
+  message("  APEX runtime library    : ${DYABLO_APEX_LIBRARY_PATH}")
+endif (DYABLO_ENABLE_APEX)
 if (DYABLO_USE_HDF5)
   if (HDF5_FOUND)
     message("  HDF5 found version    : ${HDF5_VERSION}")
@@ -236,4 +344,3 @@ if (DYABLO_BUILD_DOC)
   message("   Building doc of type ${DYABLO_DOC}")
 endif (DYABLO_BUILD_DOC)
 message("")
-

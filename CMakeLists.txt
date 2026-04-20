@@ -36,6 +36,18 @@ option (DYABLO_USE_INTERNAL_KOKKOS "Use internal Kokkos from external/kokkos" ON
 option (Kokkos_ENABLE_CUDA "Enable Kokkos::CUDA backend" OFF)
 option (Kokkos_ENABLE_SYCL "Enable Kokkos::SYCL backend" OFF)
 option (Kokkos_ENABLE_HIP "Enable Kokkos::HIP backend" OFF)
+option (Kokkos_ENABLE_TUNING "Create bindings for Kokkos tuning tools" OFF)
+option (DYABLO_ENABLE_APEX "Build the APEX Kokkos tool" OFF)
+set(DYABLO_APEX_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/apex" CACHE PATH
+    "Path to a local APEX checkout")
+set(DYABLO_APEX_GIT_REPOSITORY "" CACHE STRING
+    "Optional APEX Git repository to clone instead of using DYABLO_APEX_SOURCE_DIR")
+set(DYABLO_APEX_GIT_TAG "" CACHE STRING
+    "APEX Git tag, branch, or commit to use with DYABLO_APEX_GIT_REPOSITORY")
+set(DYABLO_CUDATOOLKIT_ROOT "" CACHE PATH
+    "Optional CUDA toolkit root forwarded to the Dyablo subproject")
+set(DYABLO_CUDA_COMPILER "" CACHE FILEPATH
+    "Optional CUDA compiler forwarded to the Dyablo subproject")
 set( Kokkos_ARCH  "" CACHE STRING "List of architectures to set for Kokkos : -DKokkos_ARCH_<arch>=ON")
 set( DYABLO_CMAKE_ARGS "" CACHE STRING "Additional cmake command line arguments to forward to Dyablo subproject"  )
 
@@ -58,6 +70,38 @@ else( DYABLO_USE_INTERNAL_KOKKOS )
   find_package(Kokkos 3.3 REQUIRED)
 
   set(DYABLO_KOKKOS_DIR ${Kokkos_DIR})
+endif()
+
+if(NOT DYABLO_CUDATOOLKIT_ROOT AND DEFINED CUDAToolkit_ROOT)
+  set(DYABLO_CUDATOOLKIT_ROOT "${CUDAToolkit_ROOT}" CACHE PATH
+      "Optional CUDA toolkit root forwarded to the Dyablo subproject" FORCE)
+elseif(NOT DYABLO_CUDATOOLKIT_ROOT AND DEFINED ENV{CUDAToolkit_ROOT})
+  set(DYABLO_CUDATOOLKIT_ROOT "$ENV{CUDAToolkit_ROOT}" CACHE PATH
+      "Optional CUDA toolkit root forwarded to the Dyablo subproject" FORCE)
+endif()
+
+if(NOT DYABLO_CUDA_COMPILER AND DEFINED CMAKE_CUDA_COMPILER)
+  set(DYABLO_CUDA_COMPILER "${CMAKE_CUDA_COMPILER}" CACHE FILEPATH
+      "Optional CUDA compiler forwarded to the Dyablo subproject" FORCE)
+elseif(NOT DYABLO_CUDA_COMPILER AND DEFINED ENV{CUDACXX})
+  set(DYABLO_CUDA_COMPILER "$ENV{CUDACXX}" CACHE FILEPATH
+      "Optional CUDA compiler forwarded to the Dyablo subproject" FORCE)
+endif()
+
+if(DYABLO_ENABLE_APEX)
+  if(DYABLO_APEX_GIT_REPOSITORY AND NOT DYABLO_APEX_GIT_TAG)
+    message(FATAL_ERROR
+      "DYABLO_APEX_GIT_TAG must be set when DYABLO_APEX_GIT_REPOSITORY is used.")
+  endif()
+  if(NOT DYABLO_APEX_GIT_REPOSITORY AND NOT EXISTS "${DYABLO_APEX_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+      "DYABLO_ENABLE_APEX=ON requires either a local APEX checkout at "
+      "'${DYABLO_APEX_SOURCE_DIR}' or DYABLO_APEX_GIT_REPOSITORY/DYABLO_APEX_GIT_TAG.")
+  endif()
+  if(NOT Kokkos_ENABLE_TUNING)
+    message(STATUS "Forcing Kokkos_ENABLE_TUNING=ON because DYABLO_ENABLE_APEX is ON")
+    set(Kokkos_ENABLE_TUNING ON CACHE BOOL "Create bindings for Kokkos tuning tools" FORCE)
+  endif()
 endif()
 
 #####################################
@@ -97,11 +141,42 @@ list (APPEND DYABLO_CMAKE_ARGS_
   -DDYABLO_USE_HDF5=${DYABLO_USE_HDF5}
   -DDYABLO_USE_MPI_CUDA_AWARE_ENFORCED=${DYABLO_USE_MPI_CUDA_AWARE_ENFORCED}
   -DDYABLO_USE_INTERNAL_KOKKOS=${DYABLO_USE_INTERNAL_KOKKOS}
+  -DDYABLO_ENABLE_APEX=${DYABLO_ENABLE_APEX}
+  -DDYABLO_APEX_SOURCE_DIR=${DYABLO_APEX_SOURCE_DIR}
+  -DDYABLO_APEX_GIT_REPOSITORY=${DYABLO_APEX_GIT_REPOSITORY}
+  -DDYABLO_APEX_GIT_TAG=${DYABLO_APEX_GIT_TAG}
   -DKokkos_ENABLE_CUDA=${Kokkos_ENABLE_CUDA}
   -DKokkos_ENABLE_SYCL=${Kokkos_ENABLE_SYCL}
   -DKokkos_ENABLE_HIP=${Kokkos_ENABLE_HIP}
+  -DKokkos_ENABLE_TUNING=${Kokkos_ENABLE_TUNING}
   -DKokkos_DIR=${DYABLO_KOKKOS_DIR}
 )
+
+if(DYABLO_CUDATOOLKIT_ROOT)
+  list(APPEND DYABLO_CMAKE_ARGS_
+    -DCUDAToolkit_ROOT=${DYABLO_CUDATOOLKIT_ROOT}
+  )
+endif()
+
+if(DYABLO_CUDA_COMPILER)
+  list(APPEND DYABLO_CMAKE_ARGS_
+    -DCMAKE_CUDA_COMPILER=${DYABLO_CUDA_COMPILER}
+  )
+endif()
+
+set(DYABLO_SUBPROJECT_ENV)
+if(DYABLO_CUDATOOLKIT_ROOT)
+  list(APPEND DYABLO_SUBPROJECT_ENV
+    CUDA_ROOT=${DYABLO_CUDATOOLKIT_ROOT}
+  )
+endif()
+if(DYABLO_CUDA_COMPILER)
+  get_filename_component(DYABLO_CUDA_COMPILER_BIN_DIR "${DYABLO_CUDA_COMPILER}" DIRECTORY)
+  list(APPEND DYABLO_SUBPROJECT_ENV
+    CUDACXX=${DYABLO_CUDA_COMPILER}
+    PATH=${DYABLO_CUDA_COMPILER_BIN_DIR}:$ENV{PATH}
+  )
+endif()
 
 # Build dyablo
 ExternalProject_Add (dyablo
@@ -109,6 +184,8 @@ ExternalProject_Add (dyablo
   BUILD_ALWAYS TRUE
   SOURCE_DIR ${PROJECT_SOURCE_DIR}/core
   CMAKE_ARGS ${DYABLO_CMAKE_ARGS_}
+  BUILD_COMMAND ${CMAKE_COMMAND} -E env ${DYABLO_SUBPROJECT_ENV} ${CMAKE_COMMAND} --build .
+  BUILD_JOB_SERVER_AWARE TRUE
   INSTALL_COMMAND ""
   BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/dyablo)
 

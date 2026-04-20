@@ -27,7 +27,7 @@ public:
   
   KOKKOS_INLINE_FUNCTION
   CellArray_patch( const Shape_t& s )
-  : CellArray_base( s, fm )
+  : CellArray_base( s )
   {}
 };
 
@@ -86,6 +86,13 @@ public:
     pdata.team_member.team_barrier();
   }
 
+  template <typename Function>
+  KOKKOS_INLINE_FUNCTION
+  void foreach_cell(const char* /*kernel_name*/, const CellArray_shape& iter_space, const Function& f) const
+  {
+    foreach_cell(iter_space, f);
+  }
+
   KOKKOS_INLINE_FUNCTION
   CellArray_patch allocate_tmp( const CellArray_patch::Ref& array_ref ) const
   {
@@ -121,19 +128,43 @@ public:
 
     scratch_size += CellArray_patch::View_t::shmem_size(bx*by*bz, nvars, 1);
     CellArray_patch::Shape_t shape{bx, by, bz, (uint32_t)nvars, 1};
-    return CellArray_patch::Ref(shape, fm);
+    return CellArray_patch::Ref(shape);
   }  
+
+  auto make_patch_policy(uint32_t nbOcts, const std::string& kernel_name) const
+  {
+    auto make_fixed_policy = [&](int team_size, int vector_length)
+    {
+      return policy_t(nbOcts, team_size, vector_length)
+        .set_scratch_size(SCRATCH_LEVEL, Kokkos::PerTeam(this->scratch_size));
+    };
+
+    // Fixed CUDA launch settings replayed from apex_converged_tuning.0.yaml.
+    if( kernel_name == "HydroE::Patch_octs_4k_8k" )
+      return make_fixed_policy(16, 2);
+
+    if( kernel_name == "HydroE::Patch_octs_8k_16k" )
+      return make_fixed_policy(16, 2);
+
+    if( kernel_name == "HydroE::Patch_octs_16k_32k" )
+      return make_fixed_policy(16, 4);
+
+    if( kernel_name == "HydroE::Patch_octs_32k_64k" )
+      return make_fixed_policy(16, 4);
+
+    return policy_t(nbOcts, Kokkos::AUTO(), Kokkos::AUTO())
+      .set_scratch_size(SCRATCH_LEVEL, Kokkos::PerTeam(this->scratch_size));
+  }
   
   template <typename Function>
   void foreach_patch(const std::string& kernel_name, const Function& f)
   {
-    std::cout << this->scratch_size << std::endl;
     const CData& cdata = this->cdata;
     uint32_t nbOcts = pmesh.getNumOctants();
+    auto policy = make_patch_policy(nbOcts, kernel_name);
 
-    Kokkos::parallel_for( "AMRBlockForeachCell::Patch::foreach_patch",
-      policy_t(nbOcts, Kokkos::AUTO())
-        .set_scratch_size(SCRATCH_LEVEL, Kokkos::PerTeam(this->scratch_size)),
+    Kokkos::parallel_for( kernel_name,
+      policy,
       KOKKOS_LAMBDA( policy_t::member_type team_member )
     {
       uint32_t iOct = team_member.league_rank();

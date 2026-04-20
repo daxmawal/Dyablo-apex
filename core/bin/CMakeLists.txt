@@ -19,6 +19,10 @@ target_link_libraries(${EXE_NAME}
   monitoring
   )
 
+if(DYABLO_ENABLE_APEX)
+  add_dependencies(${EXE_NAME} apex)
+endif()
+
 if (DYABLO_USE_MPI)  
   target_link_libraries(${EXE_NAME} mpiUtils)
 endif()

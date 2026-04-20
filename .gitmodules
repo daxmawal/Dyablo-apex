@@ -12,3 +12,7 @@
 [submodule "external/units"]
 	path = external/units
 	url = https://github.com/LLNL/units.git
+[submodule "external/apex"]
+	path = external/apex
+	url = https://github.com/daxmawal/apex.git
+	branch = fix/kokkos-tuning-cache-compat
