@@ -22,6 +22,7 @@ endif()
 add_backward(${EXE_NAME})
 
 # Files for gitlab-ci testcases
+configure_file(blast.ini blast.ini COPYONLY)
 # Blast 3D block based 
 configure_file(test_blast_3D_block.ini test_blast_3D_block.ini COPYONLY)
 configure_file(visu_blast_3D_block.pvsm visu_blast_3D_block.pvsm COPYONLY)
