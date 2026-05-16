@@ -276,7 +276,6 @@ public:
                 
                 const CellIndex iCell_m_tmp = iCell_tmp + off_m;
                 PrimState slope_L = get_slope(iCell_m_tmp, dir);
-                auto size_L = cellmetadata.getCellSize(iCell_m_U);
 
                 PrimState qL_half = policy.getPrimState( HalfStep, iCell_m_tmp );
 
@@ -289,6 +288,7 @@ public:
                 // Adding flux to the neighbor if it is bigger
                 if (Ldiff == 1) 
                 {
+                  auto size_L = cellmetadata.getCellSize(iCell_m_U);
                   ConsState du_n = fluxL * - dim_fac * dt / size_L[dir];
                   policy.atomic_addConsState(Uout, iCell_m_U, du_n);
                 }
@@ -315,7 +315,6 @@ public:
               {
                 const CellIndex iCell_p_tmp = iCell_tmp + off_p;
                 PrimState slope_R = get_slope(iCell_p_tmp, dir);
-                auto size_R = cellmetadata.getCellSize(iCell_p_U);
 
                 PrimState qR_half = policy.getPrimState( HalfStep, iCell_p_tmp );
 
@@ -328,6 +327,7 @@ public:
                 // Adding flux to the neighbor if it is bigger
                 if (Rdiff == 1)
                 {
+                  auto size_R = cellmetadata.getCellSize(iCell_p_U);
                   ConsState du_n = fluxR * dim_fac * dt / size_R[dir];
                   policy.atomic_addConsState(Uout, iCell_p_U, du_n);
                 }          
@@ -383,4 +383,3 @@ private:
 };
 
 } // namespace dyablo
-
