@@ -255,10 +255,12 @@ public:
           auto size_C = cellmetadata.getCellSize(iCell_U);
 
           real_t dim_fac = (ndim == 2 ? 0.5 : 0.25);
+          ConsState du_dir {};
+          const real_t fac_C = dt / size_C[dir];
 
           // Compute left side flux
-          ConsState fluxL {};
           {
+            ConsState flux {};
             PrimState qC = qC_half - 0.5 * slope_C;
 
             offset_t off_m{}; 
@@ -266,7 +268,7 @@ public:
             const CellIndex iCell_m_U = iCell_U.getNeighbor(off_m, search_neighbor);
             if( iCell_m_U.is_boundary() )
             {
-              fluxL = policy.getBoundaryFlux(Uin, iCell_m_U, qC, cellmetadata);
+              flux = policy.getBoundaryFlux(Uin, iCell_m_U, qC, cellmetadata);
             }
             else
             {  
@@ -283,22 +285,23 @@ public:
                 PrimState qL = qL_half + 0.5 * slope_L;
 
                 // Solving
-                fluxL = policy.riemann_solver(qL, qC, dir);
+                flux = policy.riemann_solver(qL, qC, dir);
                 
                 // Adding flux to the neighbor if it is bigger
                 if (Ldiff == 1) 
                 {
                   auto size_L = cellmetadata.getCellSize(iCell_m_U);
-                  ConsState du_n = fluxL * - dim_fac * dt / size_L[dir];
+                  ConsState du_n = flux * - dim_fac * dt / size_L[dir];
                   policy.atomic_addConsState(Uout, iCell_m_U, du_n);
                 }
               } // If smaller we skip
             }
+            du_dir += flux * fac_C;
           }
 
           // Compute right side flux
-          ConsState fluxR {};
           {     
+            ConsState flux {};
             PrimState qC = qC_half + 0.5 * slope_C;
 
             offset_t off_p{}; 
@@ -306,7 +309,7 @@ public:
             const CellIndex iCell_p_U = iCell_U.getNeighbor(off_p, search_neighbor);
             if( iCell_p_U.is_boundary() )
             {
-              fluxR = policy.getBoundaryFlux(Uin, iCell_p_U, qC, cellmetadata);
+              flux = policy.getBoundaryFlux(Uin, iCell_p_U, qC, cellmetadata);
             }
             else
             {
@@ -322,21 +325,21 @@ public:
                 PrimState qR = qR_half - 0.5 * slope_R;
 
                 // Solving
-                fluxR = policy.riemann_solver(qC, qR, dir);
+                flux = policy.riemann_solver(qC, qR, dir);
 
                 // Adding flux to the neighbor if it is bigger
                 if (Rdiff == 1)
                 {
                   auto size_R = cellmetadata.getCellSize(iCell_p_U);
-                  ConsState du_n = fluxR * dim_fac * dt / size_R[dir];
+                  ConsState du_n = flux * dim_fac * dt / size_R[dir];
                   policy.atomic_addConsState(Uout, iCell_p_U, du_n);
                 }          
               }
             }
+            du_dir -= flux * fac_C;
           } 
 
-          ConsState du = (fluxL-fluxR) * dt / size_C[dir];
-          return du;
+          return du_dir;
         };
 
         ConsState du{};
