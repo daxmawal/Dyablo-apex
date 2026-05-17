@@ -157,8 +157,8 @@ public:
           // constexpr real_t sizes[] = {1.0, 1.0, 1.5}; 
           // const real_t dL = sizes[iCell_L.level_diff()+1];
           // const real_t dR = sizes[iCell_R.level_diff()+1];  
-          const real_t dL = 1;
-          const real_t dR = 1;
+          constexpr real_t dL = 1;
+          constexpr real_t dR = 1;
 
           // Computing minmod slope for the direction
           const PrimState slope = policy.compute_slope( qL, qC, qR, dL, dR);
@@ -355,7 +355,7 @@ public:
     });
 
     // Reducing the ghosts to accumulate the flux in the data arrays 
-    const int ghost_count = 1;
+    constexpr int ghost_count = 1;
     const GhostCommunicator_partial_blocks ghost_comm ( 
       foreach_cell.get_amr_mesh(),
       Uout.getShape(),
