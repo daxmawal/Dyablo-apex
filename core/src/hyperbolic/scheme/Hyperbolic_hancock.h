@@ -212,7 +212,10 @@ public:
 
           const PrimState q = policy.getPrimState(Qpatch, iCell_Qpatch );
 
-          auto size = cellmetadata.getCellSize(iCell_Uin);
+          const auto level_C = cellmetadata.getLightOctree().getLevel(iCell_Uin.iOct);
+          const real_t dtdx = dt * cellmetadata.getInvCellSizeFromLevel(IX, level_C);
+          const real_t dtdy = dt * cellmetadata.getInvCellSizeFromLevel(IY, level_C);
+          const real_t dtdz = ndim == 3 ? dt * cellmetadata.getInvCellSizeFromLevel(IZ, level_C) : 0;
 
           PrimState sx = compute_slope(iCell_Uin, iCell_Qpatch, IX);
           PrimState sy = compute_slope(iCell_Uin, iCell_Qpatch, IY);
@@ -222,7 +225,7 @@ public:
 
           PrimState q_half = compute_half_step( q, 
                                         sx, sy, sz, 
-                                        dt/size[IX], dt/size[IY], dt/size[IZ]);
+                                        dtdx, dtdy, dtdz);
 
           policy.setPrimState( SlopesX, iCell_tmp, sx );
           policy.setPrimState( SlopesY, iCell_tmp, sy );
@@ -237,7 +240,7 @@ public:
       {
         ForeachCell::SearchMode_neighbor search_neighbor( cellmetadata.getLightOctree(), ForeachCell::SearchMode_neighbor::CLOSEST );
 
-        auto process_dir = [&](const CellIndex &iCell_U, ComponentIndex3D dir) {
+        auto process_dir = [&](const CellIndex &iCell_U, ComponentIndex3D dir, const auto level_C) {
           auto get_slope = [&](const CellIndex &iCell_tmp, ComponentIndex3D dir)
           {
             if( dir==IX )
@@ -252,11 +255,11 @@ public:
           CellIndex iCell_tmp = HalfStep.getShape().convert_index( iCell_U, search_local );
           PrimState slope_C = get_slope(iCell_tmp, dir);       
           PrimState qC_half = policy.getPrimState( HalfStep, iCell_tmp );
-          auto size_C = cellmetadata.getCellSize(iCell_U);
 
           real_t dim_fac = (ndim == 2 ? 0.5 : 0.25);
           ConsState du_dir {};
-          const real_t fac_C = dt / size_C[dir];
+          const real_t inv_size_C_dir = cellmetadata.getInvCellSizeFromLevel(dir, level_C);
+          const real_t fac_C = dt * inv_size_C_dir;
 
           // Compute left side flux
           {
@@ -290,8 +293,9 @@ public:
                 // Adding flux to the neighbor if it is bigger
                 if (Ldiff == 1) 
                 {
-                  auto size_L = cellmetadata.getCellSize(iCell_m_U);
-                  ConsState du_n = flux * - dim_fac * dt / size_L[dir];
+                  const auto level_L = static_cast<ForeachCell::CellMetaData::level_t>(static_cast<int>(level_C) - Ldiff);
+                  const real_t inv_size_L = cellmetadata.getInvCellSizeFromLevel(dir, level_L);
+                  ConsState du_n = flux * (-dim_fac * dt * inv_size_L);
                   policy.atomic_addConsState(Uout, iCell_m_U, du_n);
                 }
               } // If smaller we skip
@@ -330,8 +334,9 @@ public:
                 // Adding flux to the neighbor if it is bigger
                 if (Rdiff == 1)
                 {
-                  auto size_R = cellmetadata.getCellSize(iCell_p_U);
-                  ConsState du_n = flux * dim_fac * dt / size_R[dir];
+                  const auto level_R = static_cast<ForeachCell::CellMetaData::level_t>(static_cast<int>(level_C) - Rdiff);
+                  const real_t inv_size_R = cellmetadata.getInvCellSizeFromLevel(dir, level_R);
+                  ConsState du_n = flux * (dim_fac * dt * inv_size_R);
                   policy.atomic_addConsState(Uout, iCell_p_U, du_n);
                 }          
               }
@@ -343,10 +348,11 @@ public:
         };
 
         ConsState du{};
-        du += process_dir(iCell, IX);
-        du += process_dir(iCell, IY);
+        const auto level_C = cellmetadata.getLightOctree().getLevel(iCell.iOct);
+        du += process_dir(iCell, IX, level_C);
+        du += process_dir(iCell, IY, level_C);
         if (ndim == 3)
-          du += process_dir(iCell, IZ);
+          du += process_dir(iCell, IZ, level_C);
         policy.atomic_addConsState(Uout, iCell, du);
       });     
     });

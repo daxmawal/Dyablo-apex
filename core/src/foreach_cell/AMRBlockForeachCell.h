@@ -27,16 +27,53 @@ class AMRBlockForeachCell_CellMetaData
 public:
   using CellIndex = AMRBlockForeachCell_CellArray_impl::CellIndex;
   using pos_t = Kokkos::Array<real_t, 3>;
+  using level_t = LightOctree::level_t;
 
   inline
   AMRBlockForeachCell_CellMetaData(const AMRBlockForeachCell_CData& cdata, AMRmesh& pmesh)
-  : cdata( cdata ), lmesh(pmesh.getLightOctree())
-  {}
+  : cdata( cdata ),
+    lmesh(pmesh.getLightOctree()),
+    level_min(pmesh.get_level_min()),
+    level_max(pmesh.get_level_max())
+  {
+    DYABLO_ASSERT_HOST_RELEASE(
+      static_cast<uint32_t>(level_max) < MAX_LEVEL_COUNT,
+      "level_max exceeds precomputed cell size table capacity" );
+
+    const auto coarse_grid_size = pmesh.get_coarse_grid_size();
+    const real_t lengths[3] = {
+      cdata.xmax - cdata.xmin,
+      cdata.ymax - cdata.ymin,
+      cdata.zmax - cdata.zmin
+    };
+    const uint32_t block_size[3] = {cdata.bx, cdata.by, cdata.bz};
+
+    for( level_t level = level_min; level <= level_max; ++level )
+    {
+      const level_t level_offset = level - level_min;
+      for( uint32_t dir = 0; dir < 3; ++dir )
+      {
+        const uint32_t cell_count = coarse_grid_size[dir] << level_offset;
+        inv_cell_size_by_level[dir][level] = static_cast<real_t>(cell_count) *
+                                             static_cast<real_t>(block_size[dir]) /
+                                             lengths[dir];
+      }
+    }
+  }
 
   KOKKOS_INLINE_FUNCTION
   const LightOctree& getLightOctree() const
   {
     return lmesh;
+  }
+
+  /// Get the inverse physical size of a cell from its AMR level
+  KOKKOS_INLINE_FUNCTION
+  real_t getInvCellSizeFromLevel( ComponentIndex3D dir, level_t level ) const
+  {
+    DYABLO_ASSERT_KOKKOS_DEBUG( level >= level_min, "Cannot get cell size below level_min" );
+    DYABLO_ASSERT_KOKKOS_DEBUG( level <= level_max, "Cannot get cell size above level_max" );
+    return inv_cell_size_by_level[dir][level];
   }
 
   /// Get the physical size of the cell
@@ -136,8 +173,13 @@ public:
     };  
   }
 private:
+  static constexpr uint32_t MAX_LEVEL_COUNT = sizeof(LightOctree::logical_coord_t) * 8;
+
   const AMRBlockForeachCell_CData cdata;
   LightOctree lmesh;
+  level_t level_min;
+  level_t level_max;
+  real_t inv_cell_size_by_level[3][MAX_LEVEL_COUNT] = {};
 };
 
 /**
