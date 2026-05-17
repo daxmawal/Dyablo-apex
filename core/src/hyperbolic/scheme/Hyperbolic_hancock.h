@@ -23,6 +23,7 @@ class Hyperbolic_hancock : public HyperbolicUpdate {
 public:
   using PrimState = typename Policy::PrimState;
   using ConsState = typename Policy::ConsState;
+  using ComputeFn = void (Hyperbolic_hancock::*)(UserData&, ScalarSimulationData&);
 
 public:
   Hyperbolic_hancock(
@@ -33,6 +34,7 @@ public:
     timers(timers),
     policy_params(Policy::getParams(configMap)),
     ndim(configMap.getValue<int>("mesh", "ndim", 3)),
+    compute_fn((ndim == 3) ? &Hyperbolic_hancock::compute<3> : &Hyperbolic_hancock::compute<2>),
     gamma0( configMap.getValue<real_t>("hydro","gamma0", 1.4) ),
     smallr( configMap.getValue<real_t>("hydro","smallr", 1e-10) ),
     smallp( configMap.getValue<real_t>("hydro","smallp", 1e-10) )
@@ -47,14 +49,7 @@ public:
 
   void update( UserData& U, ScalarSimulationData& scalar_data) override 
   {
-    if(this->ndim == 3)
-    {
-      compute<3>(U, scalar_data);
-    }
-    else 
-    {
-      compute<2>(U, scalar_data);
-    }
+    (this->*compute_fn)(U, scalar_data);
   }
 
   template<int NDim>
@@ -396,6 +391,7 @@ private:
   typename Policy::Params policy_params;
 
   int ndim;
+  ComputeFn compute_fn;
   real_t gamma0, smallr, smallp;
 };
 
