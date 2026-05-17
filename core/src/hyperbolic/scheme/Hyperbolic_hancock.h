@@ -3,6 +3,7 @@
 #include "HyperbolicUpdate_base.h"
 #include "mpi/GhostCommunicator_partial_blocks.h"
 #include "foreach_cell/ForeachCell_utils.h"
+#include "utils/misc/Dyablo_assert.h"
 
 namespace dyablo {
 namespace{
@@ -43,11 +44,24 @@ public:
    * @param U the input/output global array
    * @param scalar_data input scalar data
    */
-  void update( UserData& U, ScalarSimulationData& scalar_data)
+
+  void update( UserData& U, ScalarSimulationData& scalar_data) override 
+  {
+    if(this->ndim == 3)
+    {
+      compute<3>(U, scalar_data);
+    }
+    else 
+    {
+      compute<2>(U, scalar_data);
+    }
+  }
+
+  template<int NDim>
+  void compute( UserData& U, ScalarSimulationData& scalar_data)
   {
     real_t dt = scalar_data.get<real_t>("dt");
     real_t gamma0 = this->gamma0;
-    int ndim = this->ndim;
 
     const Policy policy( this->policy_params, scalar_data ); 
     Timers& timers = this->timers; 
@@ -82,12 +96,12 @@ public:
     // Create abstract temporary ghosted arrays for patches 
     using PatchArray = ForeachCell::CellArray_patch;
     uint32_t nbFields = State_traits<PrimState>::nvars;
-    PatchArray::Ref Qpatch_ = foreach_cell.reserve_patch_tmp("Qpatch", 2, 2, (ndim == 3)?2:0, nbFields);
-    PatchArray::Ref HalfStep_ = foreach_cell.reserve_patch_tmp("HalfStep", 1, 1, (ndim==3)?1:0, nbFields);
-    PatchArray::Ref SlopesX_ = foreach_cell.reserve_patch_tmp("SlopesX", 1, 1, (ndim==3)?1:0, nbFields);
-    PatchArray::Ref SlopesY_ = foreach_cell.reserve_patch_tmp("SlopesY", 1, 1, (ndim==3)?1:0, nbFields);
+    PatchArray::Ref Qpatch_ = foreach_cell.reserve_patch_tmp("Qpatch", 2, 2, (NDim == 3)?2:0, nbFields);
+    PatchArray::Ref HalfStep_ = foreach_cell.reserve_patch_tmp("HalfStep", 1, 1, (NDim==3)?1:0, nbFields);
+    PatchArray::Ref SlopesX_ = foreach_cell.reserve_patch_tmp("SlopesX", 1, 1, (NDim==3)?1:0, nbFields);
+    PatchArray::Ref SlopesY_ = foreach_cell.reserve_patch_tmp("SlopesY", 1, 1, (NDim==3)?1:0, nbFields);
     PatchArray::Ref SlopesZ_;
-    if( ndim == 3 )
+    if( NDim == 3 )
       SlopesZ_ = foreach_cell.reserve_patch_tmp("SlopesZ", 1, 1, 1, nbFields);
 
     ForeachCell::SearchMode_neighbor search_neighbor( this->foreach_cell.get_amr_mesh().getLightOctree(), ForeachCell::SearchMode_neighbor::ORIGIN );
@@ -110,7 +124,7 @@ public:
           u = policy.getBoundaryValue(Uin, iCell_Uin, cellmetadata);
         else if (level_diff < 0) {
           int subcell_count = 
-          foreach_sibling(ndim, iCell_Uin, search_neighbor_origin,
+          foreach_sibling(NDim, iCell_Uin, search_neighbor_origin,
             [&](const CellIndex& iCell_neigh) {
               ConsState uloc = policy.getConsState(Uin, iCell_neigh);
               u += uloc;
@@ -127,7 +141,7 @@ public:
       PatchArray SlopesX = patch.allocate_tmp(SlopesX_);
       PatchArray SlopesY = patch.allocate_tmp(SlopesY_);
       PatchArray SlopesZ;
-      if( ndim == 3 )
+      if( NDim == 3 )
         SlopesZ = patch.allocate_tmp(SlopesZ_);
       PatchArray HalfStep = patch.allocate_tmp(HalfStep_);
 
@@ -172,7 +186,7 @@ public:
           sz*=0.5;
 
           PrimState half_step{};
-          if( ndim == 3 )
+          if( NDim == 3 )
           {
             half_step.rho = q.rho + (-q.u * sx.rho - sx.u * q.rho) * dtdx 
                                   + (-q.v * sy.rho - sy.v * q.rho) * dtdy 
@@ -217,7 +231,7 @@ public:
           PrimState sx = compute_slope(iCell_Uin, iCell_Qpatch, IX);
           PrimState sy = compute_slope(iCell_Uin, iCell_Qpatch, IY);
           PrimState sz {};
-          if(ndim == 3)
+          if(NDim == 3)
             sz = compute_slope(iCell_Uin, iCell_Qpatch, IZ);
 
           PrimState q_half = compute_half_step( q, 
@@ -226,7 +240,7 @@ public:
 
           policy.setPrimState( SlopesX, iCell_tmp, sx );
           policy.setPrimState( SlopesY, iCell_tmp, sy );
-          if(ndim == 3)
+          if(NDim == 3)
             policy.setPrimState( SlopesZ, iCell_tmp, sz );
           policy.setPrimState( HalfStep, iCell_tmp, q_half );
         }
@@ -254,7 +268,7 @@ public:
           PrimState qC_half = policy.getPrimState( HalfStep, iCell_tmp );
           auto size_C = cellmetadata.getCellSize(iCell_U);
 
-          real_t dim_fac = (ndim == 2 ? 0.5 : 0.25);
+          real_t dim_fac = (NDim == 2 ? 0.5 : 0.25);
           ConsState du_dir {};
           const real_t fac_C = dt / size_C[dir];
 
@@ -345,7 +359,7 @@ public:
         ConsState du{};
         du += process_dir(iCell, IX);
         du += process_dir(iCell, IY);
-        if (ndim == 3)
+        if(NDim == 3)
           du += process_dir(iCell, IZ);
         policy.atomic_addConsState(Uout, iCell, du);
       });     
