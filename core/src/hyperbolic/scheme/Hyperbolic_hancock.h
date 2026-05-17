@@ -34,7 +34,8 @@ public:
     timers(timers),
     policy_params(Policy::getParams(configMap)),
     ndim(configMap.getValue<int>("mesh", "ndim", 3)),
-    compute_fn((ndim == 3) ? &Hyperbolic_hancock::compute<3> : &Hyperbolic_hancock::compute<2>),
+    cache_slopes(configMap.getValue<bool>("hydro", "hancock_cache_slopes", true)),
+    compute_fn(select_compute_fn(ndim, cache_slopes)),
     gamma0( configMap.getValue<real_t>("hydro","gamma0", 1.4) ),
     smallr( configMap.getValue<real_t>("hydro","smallr", 1e-10) ),
     smallp( configMap.getValue<real_t>("hydro","smallp", 1e-10) )
@@ -52,7 +53,7 @@ public:
     (this->*compute_fn)(U, scalar_data);
   }
 
-  template<int NDim>
+  template<int NDim, bool CacheSlopes>
   void compute( UserData& U, ScalarSimulationData& scalar_data)
   {
     const real_t dt = scalar_data.get<real_t>("dt");
@@ -93,9 +94,16 @@ public:
     constexpr uint32_t nbFields = State_traits<PrimState>::nvars;
     const PatchArray::Ref Qpatch_ = foreach_cell.reserve_patch_tmp("Qpatch", 2, 2, (NDim == 3)?2:0, nbFields);
     const PatchArray::Ref HalfStep_ = foreach_cell.reserve_patch_tmp("HalfStep", 1, 1, (NDim==3)?1:0, nbFields);
-    const PatchArray::Ref SlopesX_ = foreach_cell.reserve_patch_tmp("SlopesX", 1, 1, (NDim==3)?1:0, nbFields);
-    const PatchArray::Ref SlopesY_ = foreach_cell.reserve_patch_tmp("SlopesY", 1, 1, (NDim==3)?1:0, nbFields);
-    const PatchArray::Ref SlopesZ_ = (NDim == 3) ? foreach_cell.reserve_patch_tmp("SlopesZ", 1, 1, 1, nbFields) : PatchArray::Ref{};
+    PatchArray::Ref SlopesX_;
+    PatchArray::Ref SlopesY_;
+    PatchArray::Ref SlopesZ_;
+    if constexpr (CacheSlopes)
+    {
+      SlopesX_ = foreach_cell.reserve_patch_tmp("SlopesX", 1, 1, (NDim==3)?1:0, nbFields);
+      SlopesY_ = foreach_cell.reserve_patch_tmp("SlopesY", 1, 1, (NDim==3)?1:0, nbFields);
+      if constexpr (NDim == 3)
+        SlopesZ_ = foreach_cell.reserve_patch_tmp("SlopesZ", 1, 1, 1, nbFields);
+    }
 
     const ForeachCell::SearchMode_local search_local( ForeachCell::SearchMode_local::ASSERT );
 
@@ -130,14 +138,26 @@ public:
         policy.setPrimState( Qpatch, iCell_Qpatch, q );
       });
 
-      const PatchArray SlopesX = patch.allocate_tmp(SlopesX_);
-      const PatchArray SlopesY = patch.allocate_tmp(SlopesY_);
-      const PatchArray SlopesZ = (NDim == 3) ? patch.allocate_tmp(SlopesZ_) : PatchArray{};
+      PatchArray SlopesX;
+      PatchArray SlopesY;
+      PatchArray SlopesZ;
+      if constexpr (CacheSlopes)
+      {
+        SlopesX = patch.allocate_tmp(SlopesX_);
+        SlopesY = patch.allocate_tmp(SlopesY_);
+        if constexpr (NDim == 3)
+          SlopesZ = patch.allocate_tmp(SlopesZ_);
+      }
       const PatchArray HalfStep = patch.allocate_tmp(HalfStep_);
 
       patch.foreach_cell( HalfStep.getShape(),
         CELL_LAMBDA(const CellIndex& iCell_tmp)
       {
+        // NVCC extended lambdas need these captures before if constexpr blocks.
+        (void)SlopesX;
+        (void)SlopesY;
+        (void)SlopesZ;
+
         // Return Slope at position iCell
         const auto compute_slope = [&](const CellIndex &iCell_Uin, const CellIndex &iCell_Qpatch, ComponentIndex3D dir) 
         {        
@@ -227,10 +247,13 @@ public:
                                         sx, sy, sz, 
                                         dt/size[IX], dt/size[IY], dt/size[IZ]);
 
-          policy.setPrimState( SlopesX, iCell_tmp, sx );
-          policy.setPrimState( SlopesY, iCell_tmp, sy );
-          if(NDim == 3)
-            policy.setPrimState( SlopesZ, iCell_tmp, sz );
+          if constexpr (CacheSlopes)
+          {
+            policy.setPrimState( SlopesX, iCell_tmp, sx );
+            policy.setPrimState( SlopesY, iCell_tmp, sy );
+            if constexpr (NDim == 3)
+              policy.setPrimState( SlopesZ, iCell_tmp, sz );
+          }
           policy.setPrimState( HalfStep, iCell_tmp, q_half );
         }
       });
@@ -238,17 +261,43 @@ public:
       patch.foreach_cell( Uout.getShape(),
         CELL_LAMBDA(const CellIndex& iCell)
       {
+        // NVCC extended lambdas need these captures before if constexpr blocks.
+        (void)SlopesX;
+        (void)SlopesY;
+        (void)SlopesZ;
+        (void)Qpatch;
+        (void)search_local;
+        (void)policy;
+
         const ForeachCell::SearchMode_neighbor search_neighbor( cellmetadata.getLightOctree(), ForeachCell::SearchMode_neighbor::CLOSEST );
 
         const auto process_dir = [&](const CellIndex &iCell_U, ComponentIndex3D dir) {
           const auto get_slope = [&](const CellIndex &iCell_tmp, ComponentIndex3D dir)
           {
-            if( dir==IX )
-              return policy.getPrimState( SlopesX, iCell_tmp );
-            else if( dir==IY )
-              return policy.getPrimState( SlopesY, iCell_tmp );
+            if constexpr (CacheSlopes)
+            {
+              if( dir==IX )
+                return policy.getPrimState( SlopesX, iCell_tmp );
+              else if( dir==IY )
+                return policy.getPrimState( SlopesY, iCell_tmp );
+              else
+                return policy.getPrimState( SlopesZ, iCell_tmp );
+            }
             else
-              return policy.getPrimState( SlopesZ, iCell_tmp );
+            {
+              const CellIndex iCell_Qpatch = Qpatch.getShape().convert_index(iCell_tmp, search_local);
+
+              const PrimState qC = policy.getPrimState(Qpatch, iCell_Qpatch );
+              offset_t off_m{}; off_m[dir] = -1;
+              const PrimState qL = policy.getPrimState(Qpatch, iCell_Qpatch + off_m); 
+              offset_t off_p{}; off_p[dir] =  1;
+              const PrimState qR = policy.getPrimState(Qpatch, iCell_Qpatch + off_p); 
+
+              constexpr real_t dL = 1;
+              constexpr real_t dR = 1;
+
+              return policy.compute_slope( qL, qC, qR, dL, dR);
+            }
           };       
           
           // Getting centered value and slope
@@ -379,12 +428,23 @@ public:
   }
 
 private:
+  static ComputeFn select_compute_fn( int ndim, bool cache_slopes )
+  {
+    if( ndim == 3 )
+      return cache_slopes ? &Hyperbolic_hancock::compute<3, true>
+                          : &Hyperbolic_hancock::compute<3, false>;
+    else
+      return cache_slopes ? &Hyperbolic_hancock::compute<2, true>
+                          : &Hyperbolic_hancock::compute<2, false>;
+  }
+
   ForeachCell& foreach_cell;
   
   Timers& timers;  
   const typename Policy::Params policy_params;
 
   const int ndim;
+  const bool cache_slopes;
   const ComputeFn compute_fn;
   const real_t gamma0, smallr, smallp;
 };
