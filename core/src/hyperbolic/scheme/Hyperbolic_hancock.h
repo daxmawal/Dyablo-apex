@@ -9,8 +9,148 @@ namespace{
 using CellIndex     = ForeachCell::CellIndex;
 using FieldAccessor = UserData::FieldAccessor;
 using offset_t      = typename CellIndex::offset_t;
+using PatchArray    = ForeachCell::CellArray_patch;
 
 enum VarIndex_gravity {IGX, IGY, IGZ};
+
+template<ComponentIndex3D DIR, int NDIM, typename Policy>
+KOKKOS_INLINE_FUNCTION
+typename Policy::PrimState get_slope_dir(
+  const Policy& policy,
+  const PatchArray& SlopesX,
+  const PatchArray& SlopesY,
+  const PatchArray& SlopesZ,
+  const CellIndex& iCell_tmp)
+{
+  static_assert(DIR == IX || DIR == IY || DIR == IZ);
+  static_assert(NDIM == 2 || NDIM == 3);
+
+  if constexpr (DIR == IX)
+    return policy.getPrimState( SlopesX, iCell_tmp );
+  else if constexpr (DIR == IY)
+    return policy.getPrimState( SlopesY, iCell_tmp );
+  else
+  {
+    static_assert(NDIM == 3);
+    return policy.getPrimState( SlopesZ, iCell_tmp );
+  }
+}
+
+template<ComponentIndex3D DIR, int NDIM, typename Policy>
+KOKKOS_INLINE_FUNCTION
+typename Policy::ConsState process_dir(
+  const CellIndex& iCell_U,
+  const Policy& policy,
+  const FieldAccessor& Uin,
+  const FieldAccessor& Uout,
+  const PatchArray& SlopesX,
+  const PatchArray& SlopesY,
+  const PatchArray& SlopesZ,
+  const PatchArray& HalfStep,
+  const ForeachCell::CellMetaData& cellmetadata,
+  const ForeachCell::SearchMode_local& search_local,
+  const ForeachCell::SearchMode_neighbor& search_neighbor,
+  real_t dt)
+{
+  using PrimState = typename Policy::PrimState;
+  using ConsState = typename Policy::ConsState;
+
+  static_assert(DIR == IX || DIR == IY || DIR == IZ);
+  static_assert(NDIM == 2 || NDIM == 3);
+  static_assert(DIR != IZ || NDIM == 3);
+
+  // Getting centered value and slope
+  CellIndex iCell_tmp = HalfStep.getShape().convert_index( iCell_U, search_local );
+  PrimState slope_C = get_slope_dir<DIR, NDIM>(policy, SlopesX, SlopesY, SlopesZ, iCell_tmp);
+  PrimState qC_half = policy.getPrimState( HalfStep, iCell_tmp );
+  auto size_C = cellmetadata.getCellSize(iCell_U);
+
+  constexpr real_t dim_fac = (NDIM == 2 ? 0.5 : 0.25);
+  ConsState du_dir {};
+  const real_t fac_C = dt / size_C[DIR];
+
+  // Compute left side flux
+  {
+    ConsState flux {};
+    PrimState qC = qC_half - 0.5 * slope_C;
+
+    offset_t off_m{};
+    off_m[DIR] = -1;
+    const CellIndex iCell_m_U = iCell_U.getNeighbor(off_m, search_neighbor);
+    if( iCell_m_U.is_boundary() )
+    {
+      flux = policy.getBoundaryFlux(Uin, iCell_m_U, qC, cellmetadata);
+    }
+    else
+    {
+      int Ldiff = iCell_m_U.level_diff();
+      if (Ldiff >= 0)
+      {
+        const CellIndex iCell_m_tmp = iCell_tmp + off_m;
+        PrimState slope_L = get_slope_dir<DIR, NDIM>(policy, SlopesX, SlopesY, SlopesZ, iCell_m_tmp);
+
+        PrimState qL_half = policy.getPrimState( HalfStep, iCell_m_tmp );
+
+        // Reconstructing
+        PrimState qL = qL_half + 0.5 * slope_L;
+
+        // Solving
+        flux = policy.riemann_solver(qL, qC, DIR);
+
+        // Adding flux to the neighbor if it is bigger
+        if (Ldiff == 1)
+        {
+          auto size_L = cellmetadata.getCellSize(iCell_m_U);
+          ConsState du_n = flux * - dim_fac * dt / size_L[DIR];
+          policy.atomic_addConsState(Uout, iCell_m_U, du_n);
+        }
+      } // If smaller we skip
+    }
+    du_dir += flux * fac_C;
+  }
+
+  // Compute right side flux
+  {
+    ConsState flux {};
+    PrimState qC = qC_half + 0.5 * slope_C;
+
+    offset_t off_p{};
+    off_p[DIR] = 1;
+    const CellIndex iCell_p_U = iCell_U.getNeighbor(off_p, search_neighbor);
+    if( iCell_p_U.is_boundary() )
+    {
+      flux = policy.getBoundaryFlux(Uin, iCell_p_U, qC, cellmetadata);
+    }
+    else
+    {
+      int Rdiff = iCell_p_U.level_diff();
+      if (Rdiff >= 0)
+      {
+        const CellIndex iCell_p_tmp = iCell_tmp + off_p;
+        PrimState slope_R = get_slope_dir<DIR, NDIM>(policy, SlopesX, SlopesY, SlopesZ, iCell_p_tmp);
+
+        PrimState qR_half = policy.getPrimState( HalfStep, iCell_p_tmp );
+
+        // Reconstructing
+        PrimState qR = qR_half - 0.5 * slope_R;
+
+        // Solving
+        flux = policy.riemann_solver(qC, qR, DIR);
+
+        // Adding flux to the neighbor if it is bigger
+        if (Rdiff == 1)
+        {
+          auto size_R = cellmetadata.getCellSize(iCell_p_U);
+          ConsState du_n = flux * dim_fac * dt / size_R[DIR];
+          policy.atomic_addConsState(Uout, iCell_p_U, du_n);
+        }
+      }
+    }
+    du_dir -= flux * fac_C;
+  }
+
+  return du_dir;
+}
 
 }// namespace
 
@@ -80,7 +220,6 @@ public:
     });
 
     // Create abstract temporary ghosted arrays for patches 
-    using PatchArray = ForeachCell::CellArray_patch;
     uint32_t nbFields = State_traits<PrimState>::nvars;
     PatchArray::Ref Qpatch_ = foreach_cell.reserve_patch_tmp("Qpatch", 2, 2, (ndim == 3)?2:0, nbFields);
     PatchArray::Ref HalfStep_ = foreach_cell.reserve_patch_tmp("HalfStep", 1, 1, (ndim==3)?1:0, nbFields);
@@ -237,116 +376,18 @@ public:
       {
         ForeachCell::SearchMode_neighbor search_neighbor( cellmetadata.getLightOctree(), ForeachCell::SearchMode_neighbor::CLOSEST );
 
-        auto process_dir = [&](const CellIndex &iCell_U, ComponentIndex3D dir) {
-          auto get_slope = [&](const CellIndex &iCell_tmp, ComponentIndex3D dir)
-          {
-            if( dir==IX )
-              return policy.getPrimState( SlopesX, iCell_tmp );
-            else if( dir==IY )
-              return policy.getPrimState( SlopesY, iCell_tmp );
-            else
-              return policy.getPrimState( SlopesZ, iCell_tmp );
-          };       
-          
-          // Getting centered value and slope
-          CellIndex iCell_tmp = HalfStep.getShape().convert_index( iCell_U, search_local );
-          PrimState slope_C = get_slope(iCell_tmp, dir);       
-          PrimState qC_half = policy.getPrimState( HalfStep, iCell_tmp );
-          auto size_C = cellmetadata.getCellSize(iCell_U);
-
-          real_t dim_fac = (ndim == 2 ? 0.5 : 0.25);
-          ConsState du_dir {};
-          const real_t fac_C = dt / size_C[dir];
-
-          // Compute left side flux
-          {
-            ConsState flux {};
-            PrimState qC = qC_half - 0.5 * slope_C;
-
-            offset_t off_m{}; 
-            off_m[dir] = -1;
-            const CellIndex iCell_m_U = iCell_U.getNeighbor(off_m, search_neighbor);
-            if( iCell_m_U.is_boundary() )
-            {
-              flux = policy.getBoundaryFlux(Uin, iCell_m_U, qC, cellmetadata);
-            }
-            else
-            {  
-              int Ldiff = iCell_m_U.level_diff();
-              if (Ldiff >= 0) 
-              {       
-                
-                const CellIndex iCell_m_tmp = iCell_tmp + off_m;
-                PrimState slope_L = get_slope(iCell_m_tmp, dir);
-
-                PrimState qL_half = policy.getPrimState( HalfStep, iCell_m_tmp );
-
-                // Reconstructing
-                PrimState qL = qL_half + 0.5 * slope_L;
-
-                // Solving
-                flux = policy.riemann_solver(qL, qC, dir);
-                
-                // Adding flux to the neighbor if it is bigger
-                if (Ldiff == 1) 
-                {
-                  auto size_L = cellmetadata.getCellSize(iCell_m_U);
-                  ConsState du_n = flux * - dim_fac * dt / size_L[dir];
-                  policy.atomic_addConsState(Uout, iCell_m_U, du_n);
-                }
-              } // If smaller we skip
-            }
-            du_dir += flux * fac_C;
-          }
-
-          // Compute right side flux
-          {     
-            ConsState flux {};
-            PrimState qC = qC_half + 0.5 * slope_C;
-
-            offset_t off_p{}; 
-            off_p[dir] = 1;
-            const CellIndex iCell_p_U = iCell_U.getNeighbor(off_p, search_neighbor);
-            if( iCell_p_U.is_boundary() )
-            {
-              flux = policy.getBoundaryFlux(Uin, iCell_p_U, qC, cellmetadata);
-            }
-            else
-            {
-              int Rdiff = iCell_p_U.level_diff();
-              if (Rdiff >= 0) 
-              {
-                const CellIndex iCell_p_tmp = iCell_tmp + off_p;
-                PrimState slope_R = get_slope(iCell_p_tmp, dir);
-
-                PrimState qR_half = policy.getPrimState( HalfStep, iCell_p_tmp );
-
-                // Reconstructing
-                PrimState qR = qR_half - 0.5 * slope_R;
-
-                // Solving
-                flux = policy.riemann_solver(qC, qR, dir);
-
-                // Adding flux to the neighbor if it is bigger
-                if (Rdiff == 1)
-                {
-                  auto size_R = cellmetadata.getCellSize(iCell_p_U);
-                  ConsState du_n = flux * dim_fac * dt / size_R[dir];
-                  policy.atomic_addConsState(Uout, iCell_p_U, du_n);
-                }          
-              }
-            }
-            du_dir -= flux * fac_C;
-          } 
-
-          return du_dir;
-        };
-
         ConsState du{};
-        du += process_dir(iCell, IX);
-        du += process_dir(iCell, IY);
         if (ndim == 3)
-          du += process_dir(iCell, IZ);
+        {
+          du += process_dir<IX, 3>(iCell, policy, Uin, Uout, SlopesX, SlopesY, SlopesZ, HalfStep, cellmetadata, search_local, search_neighbor, dt);
+          du += process_dir<IY, 3>(iCell, policy, Uin, Uout, SlopesX, SlopesY, SlopesZ, HalfStep, cellmetadata, search_local, search_neighbor, dt);
+          du += process_dir<IZ, 3>(iCell, policy, Uin, Uout, SlopesX, SlopesY, SlopesZ, HalfStep, cellmetadata, search_local, search_neighbor, dt);
+        }
+        else
+        {
+          du += process_dir<IX, 2>(iCell, policy, Uin, Uout, SlopesX, SlopesY, SlopesZ, HalfStep, cellmetadata, search_local, search_neighbor, dt);
+          du += process_dir<IY, 2>(iCell, policy, Uin, Uout, SlopesX, SlopesY, SlopesZ, HalfStep, cellmetadata, search_local, search_neighbor, dt);
+        }
         policy.atomic_addConsState(Uout, iCell, du);
       });     
     });
