@@ -3,6 +3,14 @@
 #include "utils/config/ConfigMap.h"
 #include "foreach_cell/AMRBlockForeachCell_CellArray.h"
 
+#if defined(DYABLO_ENABLE_KKF_COMPUTE_DT_REPLAY)
+#if defined(DYABLO_KKF_COMPUTE_DT_REPLAYER)
+#include <kernel_replayer.hpp>
+#else
+#include <kernel_extractor.hpp>
+#endif
+#endif
+
 namespace dyablo {
 
 
@@ -452,8 +460,7 @@ public:
     uint32_t nbCellsPerBlock = bx*by*bz;
     uint32_t nbOcts = iter_space.iOct_count();
 
-    Kokkos::parallel_reduce( kernel_name, 
-      Kokkos::RangePolicy<>(0,nbCellsPerBlock*nbOcts),
+    auto kernel_functor =
       KOKKOS_LAMBDA( uint32_t index, typename Reducer_t::value_type&... update )
     {
       uint32_t iOct = index/nbCellsPerBlock;
@@ -465,7 +472,21 @@ public:
 
       CellIndex iCell = iter_space.getCellIndex(iOct, i, j, k);
       f( iCell, update... );
-    }, reducer...);
+    };
+
+#if defined(DYABLO_ENABLE_KKF_COMPUTE_DT_REPLAY)
+    if( kernel_name == "compute_dt" )
+    {
+      Kokkos::parallel_reduce( kernel_name,
+        Kokkos::RangePolicy<>(0,nbCellsPerBlock*nbOcts),
+        cexa::kernel_replayer::replay_functor(kernel_functor), reducer...);
+      return;
+    }
+#endif
+
+    Kokkos::parallel_reduce( kernel_name,
+      Kokkos::RangePolicy<>(0,nbCellsPerBlock*nbOcts),
+      kernel_functor, reducer...);
   }
 
   /// Use Kokkos::Sum as default reducer for reduce_cell

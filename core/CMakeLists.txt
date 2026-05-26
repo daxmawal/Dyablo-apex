@@ -30,7 +30,8 @@ option (Kokkos_ENABLE_CUDA   "enable Kokkos::Cuda backend" OFF)
 option (Kokkos_ENABLE_HIP   "enable Kokkos::HIP backend" OFF)
 option (Kokkos_ENABLE_SYCL   "enable Kokkos::SyCL backend" OFF)
 option (Kokkos_ENABLE_IMPL_CUDA_MALLOC_ASYNC "Use CudaMallocAsync for Kokkos allocations" OFF)
-set    (Kokkos_DIR "Kokkos installation directory or internal source" CACHE PATH ""  )
+set    (DYABLO_DEFAULT_KOKKOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../external/kokkos")
+set    (Kokkos_DIR "${DYABLO_DEFAULT_KOKKOS_DIR}" CACHE PATH "Kokkos installation directory or internal source"  )
 set    (DYABLO_KOKKOS_COMPILE_FLAGS "" CACHE STRING "Compile flags Added to targets including Kokkos (nvccs -G goes here)"   )
 
 
@@ -46,7 +47,7 @@ set (Kokkos_ENABLE_CUDA_CONSTEXPR ${Kokkos_ENABLE_CUDA} CACHE BOOL "Enable use o
 set (BUILD_SHARED_LIBS ON)
 
 # Use CMAKE_DL_LIBS to find the dl library
-set( LIBDL_LIBRARY CACHE STRING "LIBDL library" "${CMAKE_DL_LIBS}" )
+set( LIBDL_LIBRARY "${CMAKE_DL_LIBS}" CACHE STRING "LIBDL library" FORCE )
 
 #####################################################################
 # Kokkos
@@ -243,4 +244,3 @@ if (DYABLO_BUILD_DOC)
   message("   Building doc of type ${DYABLO_DOC}")
 endif (DYABLO_BUILD_DOC)
 message("")
-

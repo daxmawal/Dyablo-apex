@@ -1,4 +1,5 @@
 #include "Compute_dt_base.h"
+#include "compute_dt/Compute_dt_hyperbolic_functor.h"
 
 #include "hyperbolic/policy/HyperbolicPolicy_Hydro.h"
 #include "hyperbolic/policy/HyperbolicPolicy_GLMMHD.h"
@@ -61,9 +62,6 @@ public:
 
   double compute_dt_aux( UserData& U, ScalarSimulationData& scalar_data )
   {
-    using PrimState = typename Policy::PrimState;
-    using ConsState = typename Policy::ConsState;
-
     Policy policy{ policy_params, scalar_data };
 
     int ndim = foreach_cell.getDim();
@@ -73,51 +71,12 @@ public:
 
     UserData::FieldAccessor Uin = policy.getUin(U);
 
+    ComputeDtHyperbolicFunctor<Policy> compute_dt_functor(
+      ndim, gamma0, cells, Uin, policy);
+
     real_t inv_dt;
     foreach_cell.reduce_cell( "compute_dt", U.getShape(),
-    KOKKOS_LAMBDA( const ForeachCell::CellIndex& iCell, real_t& inv_dt_update )
-    {
-      auto cell_size = cells.getCellSize(iCell);
-      real_t dx = cell_size[IX];
-      real_t dy = cell_size[IY];
-      real_t dz = cell_size[IZ];
-      
-      ConsState uLoc = policy.getConsState(Uin, iCell);
-      PrimState qLoc = policy.consToPrim(uLoc);
-
-      const real_t cs = sqrt(qLoc.p * gamma0 / qLoc.rho);
-
-      real_t vx = cs + FABS(qLoc.u);
-      real_t vy = cs + FABS(qLoc.v);
-      real_t vz = (ndim==2)? 0 : cs + FABS(qLoc.w);
-
-      inv_dt_update = FMAX( inv_dt_update, vx/dx + vy/dy + vz/dz );
-
-      // TODO : Find a BETTER way to do this !
-      if constexpr (std::is_same_v<PrimState, HyperbolicPolicy_PrimGLMMHDState>) {
-        const real_t Bx = qLoc.Bx;
-        const real_t By = qLoc.By;
-        const real_t Bz = qLoc.Bz;
-        const real_t gr = cs*cs*qLoc.rho;
-        const real_t Bt2 [] = {By*By+Bz*Bz,
-                               Bx*Bx+Bz*Bz,
-                               Bx*Bx+By*By};
-        const real_t B2 = Bx*Bx + By*By + Bz*Bz;
-        const real_t cf1 = gr-B2;
-        const real_t V [] = {qLoc.u, qLoc.v, qLoc.w};
-        const real_t D [] = {dx, dy, dz};
-
-        real_t cmax = 0.0;
-        for (int i=0; i < ndim; ++i) {
-          const real_t cf2 = gr + B2 + sqrt(cf1*cf1 + 4.0*gr*Bt2[i]);
-          const real_t cf = sqrt(0.5 * cf2 / qLoc.rho);
-
-          cmax += (cf + Kokkos::abs(V[i])) / D[i];
-        }
-        inv_dt_update = FMAX(inv_dt_update, cmax);
-     }
-
-    }, Kokkos::Max<real_t>(inv_dt) );
+      compute_dt_functor, Kokkos::Max<real_t>(inv_dt) );
 
     real_t dt = cfl / inv_dt;
     DYABLO_ASSERT_HOST_RELEASE(dt>0, "invalid dt = " << dt);

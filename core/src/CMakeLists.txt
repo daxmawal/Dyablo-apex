@@ -115,4 +115,56 @@ if (DYABLO_USE_HDF5)
     target_sources( dyablo_plugins PRIVATE ${hdf5_src} )
 endif (DYABLO_USE_HDF5)
 
+option(DYABLO_ENABLE_KKF_COMPUTE_DT_REPLAY
+       "Enable kokkos-kernel-forge dump/replay support for compute_dt" OFF)
+set(DYABLO_KKF_SRC "" CACHE PATH "Path to kokkos-kernel-forge/src")
+set(DYABLO_KKF_BUILD "${DYABLO_KKF_SRC}/../build"
+    CACHE PATH "Path to kokkos-kernel-forge/build")
 
+if (DYABLO_ENABLE_KKF_COMPUTE_DT_REPLAY)
+    if (NOT DYABLO_USE_HDF5)
+        message(FATAL_ERROR "DYABLO_ENABLE_KKF_COMPUTE_DT_REPLAY requires DYABLO_USE_HDF5=ON")
+    endif()
+    if (NOT EXISTS "${DYABLO_KKF_SRC}/extract/kernel_extractor.hpp")
+        message(FATAL_ERROR "DYABLO_KKF_SRC must point to kokkos-kernel-forge/src")
+    endif()
+    set(DYABLO_KKF_REPLAYER_LIBRARY
+        "${DYABLO_KKF_BUILD}/src/replay/libkernel_replayer.a")
+    if (NOT EXISTS "${DYABLO_KKF_REPLAYER_LIBRARY}")
+        message(FATAL_ERROR "Build kokkos-kernel-forge first: ${DYABLO_KKF_REPLAYER_LIBRARY} not found")
+    endif()
+    foreach(_dyablo_hdf5_library IN LISTS HDF5_LIBRARIES)
+        if (_dyablo_hdf5_library MATCHES "libhdf5\\.(so|a)$")
+            get_filename_component(_dyablo_hdf5_library_dir
+                "${_dyablo_hdf5_library}" DIRECTORY)
+            list(APPEND HDF5_LIBRARY_DIRS "${_dyablo_hdf5_library_dir}")
+        endif()
+    endforeach()
+    find_library(DYABLO_KKF_HDF5_HL_LIBRARY
+                 NAMES hdf5_hl
+                 HINTS ${HDF5_LIBRARY_DIRS})
+    if (NOT DYABLO_KKF_HDF5_HL_LIBRARY)
+        message(FATAL_ERROR "Could not find hdf5_hl for kokkos-kernel-forge replay")
+    endif()
+
+    target_compile_definitions(dyablo_core
+        PUBLIC DYABLO_ENABLE_KKF_COMPUTE_DT_REPLAY)
+    target_include_directories(dyablo_core
+        PUBLIC "${DYABLO_KKF_SRC}/extract")
+
+    add_executable(dyablo_compute_dt_replay
+        ${CMAKE_CURRENT_SOURCE_DIR}/compute_dt/Compute_dt_hyperbolic_replay.cpp)
+    target_link_libraries(dyablo_compute_dt_replay
+        PRIVATE dyablo_core "${DYABLO_KKF_REPLAYER_LIBRARY}"
+                ${HDF5_LIBRARIES} ${DYABLO_KKF_HDF5_HL_LIBRARY})
+    if (DYABLO_USE_MPI)
+        target_link_libraries(dyablo_compute_dt_replay
+            PRIVATE MPI::MPI_CXX)
+    endif()
+    target_include_directories(dyablo_compute_dt_replay
+        PRIVATE "${DYABLO_KKF_SRC}/replay" ${HDF5_INCLUDE_DIRS})
+    target_compile_definitions(dyablo_compute_dt_replay
+        PRIVATE DYABLO_KKF_COMPUTE_DT_REPLAYER)
+    set_target_properties(dyablo_compute_dt_replay
+        PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endif()
