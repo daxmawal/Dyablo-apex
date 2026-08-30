@@ -3,6 +3,10 @@
 #include "HyperbolicUpdate_base.h"
 #include "mpi/GhostCommunicator_partial_blocks.h"
 #include "foreach_cell/ForeachCell_utils.h"
+#if defined(DYABLO_USE_KKF_REPLAY_FUNCTOR)
+#include "Hyperbolic_euler_nopatch_replay.h"
+#include <krepe/extractor.hpp>
+#endif
 
 namespace dyablo {
 namespace{
@@ -85,10 +89,28 @@ public:
     });
 
     // Iterate over cells
+#if defined(DYABLO_USE_KKF_REPLAY_FUNCTOR)
+    using ReplayData = HyperbolicEulerNoPatchReplay::Data<Policy>;
+    ReplayData replay_data{
+      ForeachCell::IterationSpace_fullArray{Uout.getShape()},
+      cellmetadata, slope_enabled, policy, Uin, ndim, dt, Uout};
+
+    auto update_functor = KOKKOS_LAMBDA(uint32_t index)
+    {
+      const CellIndex iCell = replay_data.get_cell(index);
+      const auto& cellmetadata = replay_data.cellmetadata;
+      const bool slope_enabled = replay_data.slope_enabled;
+      const auto& policy = replay_data.policy;
+      const auto& Uin = replay_data.Uin;
+      const int ndim = replay_data.ndim;
+      const real_t dt = replay_data.dt;
+      const auto& Uout = replay_data.Uout;
+#else
     foreach_cell.foreach_cell( "Hyperbolic_euler::update",
       Uout.getShape(),
       KOKKOS_LAMBDA(const CellIndex &iCell)
     {
+#endif
       ForeachCell::SearchMode_neighbor search_neighbor( cellmetadata.getLightOctree(), ForeachCell::SearchMode_neighbor::CLOSEST );
 
       // Return Slope at position iCell
@@ -234,7 +256,15 @@ public:
         du += process_dir(iCell, IZ);
       policy.atomic_addConsState(Uout, iCell, du);
       
+#if defined(DYABLO_USE_KKF_REPLAY_FUNCTOR)
+    };
+    krepe::parallel_for(
+      "Hyperbolic_euler::update",
+      Kokkos::RangePolicy<>(0, replay_data.cell_count()),
+      update_functor);
+#else
     });
+#endif
 
     // Reducing the ghosts to accumulate the flux in the data arrays 
     int ghost_count = 1;

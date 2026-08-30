@@ -108,6 +108,13 @@ endif (DYABLO_USE_MPI)
 
 add_library( dyablo_plugins ${ic_src} ${plugins_src})
 target_link_libraries( dyablo_plugins PRIVATE dyablo_core )
+if(DYABLO_USE_KKF_REPLAY_FUNCTOR)
+    target_compile_definitions(dyablo_plugins PRIVATE DYABLO_USE_KKF_REPLAY_FUNCTOR)
+    target_include_directories(dyablo_plugins PRIVATE
+        $<TARGET_PROPERTY:krepe::kernel_extractor,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_link_libraries(dyablo_plugins PRIVATE krepe::krepe_compiler_plugin
+        INTERFACE $<LINK_ONLY:krepe::kernel_extractor>)
+endif()
 if (DYABLO_USE_HDF5)
     #target_link_libraries( dyablo_core PUBLIC HDF5::HDF5 )
     #TODO : properly use all flags with target HDF5::HDF5 (including -D_FORTIFY_SOURCE=2)
