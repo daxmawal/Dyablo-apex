@@ -33,6 +33,11 @@ public:
   : cdata( cdata ), lmesh(pmesh.getLightOctree())
   {}
 
+  inline
+  AMRBlockForeachCell_CellMetaData(const AMRBlockForeachCell_CData& cdata, const LightOctree& lmesh)
+  : cdata(cdata), lmesh(lmesh)
+  {}
+
   KOKKOS_INLINE_FUNCTION
   const LightOctree& getLightOctree() const
   {
