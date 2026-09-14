@@ -39,6 +39,8 @@ option (DYABLO_BUILD_DOC  "Enable / disable documentation build" OFF)
 set    (DYABLO_DOC "doxygen" CACHE STRING "documentation type (doxygen or mkdocs)")
 option (DYABLO_USE_DOUBLE "build with double precision" ON)
 option (DYABLO_USE_FPE_DEBUG "build with floating point Nan tracing (signal handler)" OFF)
+option (DYABLO_USE_KREPE_REPLAY_FUNCTOR "Capture Hyperbolic_euler::update with KREPE parallel_for" OFF)
+option (DYABLO_BUILD_KREPE_FOREACH_CELL_MINIAPP "Build the KREPE foreach_cell replay miniapp" OFF)
 option (Kokkos_ENABLE_OPENMP "enable Kokkos::OpenMP backend" ON)
 set (Kokkos_ENABLE_CUDA_LAMBDA ${Kokkos_ENABLE_CUDA} CACHE BOOL "Enable use of cuda lambdas" FORCE)
 set (Kokkos_ENABLE_CUDA_CONSTEXPR ${Kokkos_ENABLE_CUDA} CACHE BOOL "Enable use of cuda constexpr" FORCE)
@@ -46,11 +48,15 @@ set (Kokkos_ENABLE_CUDA_CONSTEXPR ${Kokkos_ENABLE_CUDA} CACHE BOOL "Enable use o
 set (BUILD_SHARED_LIBS ON)
 
 # Use CMAKE_DL_LIBS to find the dl library
-set( LIBDL_LIBRARY CACHE STRING "LIBDL library" "${CMAKE_DL_LIBS}" )
+set( LIBDL_LIBRARY "${CMAKE_DL_LIBS}" CACHE STRING "LIBDL library" )
 
 #####################################################################
 # Kokkos
 #####################################################################
+if(DYABLO_USE_INTERNAL_KOKKOS AND (DYABLO_USE_KREPE_REPLAY_FUNCTOR OR DYABLO_BUILD_KREPE_FOREACH_CELL_MINIAPP))
+  message(FATAL_ERROR "KREPE requires DYABLO_USE_INTERNAL_KOKKOS=OFF")
+endif()
+
 if( DYABLO_USE_INTERNAL_KOKKOS )
   FetchContent_Declare( kokkos_external
     SOURCE_DIR ${Kokkos_DIR}
@@ -80,7 +86,11 @@ if(   KOKKOS_CXX_COMPILER_ID STREQUAL "NVIDIA" AND KOKKOS_CXX_COMPILER_VERSION L
 endif()
 
 separate_arguments(DYABLO_KOKKOS_COMPILE_FLAGS_LIST UNIX_COMMAND "${DYABLO_KOKKOS_COMPILE_FLAGS}")
-target_compile_options(kokkos INTERFACE ${DYABLO_KOKKOS_COMPILE_FLAGS_LIST} )
+if(TARGET kokkos)
+  target_compile_options(kokkos INTERFACE ${DYABLO_KOKKOS_COMPILE_FLAGS_LIST})
+else()
+  target_compile_options(Kokkos::kokkos INTERFACE ${DYABLO_KOKKOS_COMPILE_FLAGS_LIST})
+endif()
 
 
 #####################################################################
@@ -156,6 +166,10 @@ if (DYABLO_USE_HDF5)
   endif(HDF5_FOUND)
 endif(DYABLO_USE_HDF5)
 
+if(DYABLO_USE_KREPE_REPLAY_FUNCTOR OR DYABLO_BUILD_KREPE_FOREACH_CELL_MINIAPP)
+  find_package(krepe CONFIG REQUIRED)
+endif()
+
 #####################################################################
 # Backward-cpp
 #####################################################################
@@ -189,6 +203,10 @@ add_definitions( -Wall )
 
 add_subdirectory(bin)
 add_subdirectory(src)
+
+if(DYABLO_BUILD_KREPE_FOREACH_CELL_MINIAPP)
+  add_subdirectory(miniapps/foreach_cell_krepe)
+endif()
 
 # Documentation type
 if(DYABLO_BUILD_DOC)
