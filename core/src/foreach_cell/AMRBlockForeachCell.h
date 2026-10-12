@@ -3,6 +3,12 @@
 #include "utils/config/ConfigMap.h"
 #include "foreach_cell/AMRBlockForeachCell_CellArray.h"
 
+#if defined(DYABLO_USE_KREPE_REPLAYER)
+#include <krepe/replayer.hpp>
+#elif defined(DYABLO_USE_KREPE_REPLAY_FUNCTOR)
+#include <krepe/extractor.hpp>
+#endif
+
 namespace dyablo {
 
 
@@ -417,7 +423,11 @@ public:
     uint32_t nbCellsPerBlock = bx*by*bz;
     uint32_t nbOcts = iter_space.iOct_count();
 
-    Kokkos::parallel_for( kernel_name, 
+#if defined(DYABLO_USE_KREPE_REPLAY_FUNCTOR) || defined(DYABLO_USE_KREPE_REPLAYER)
+    krepe::parallel_for( kernel_name,
+#else
+    Kokkos::parallel_for( kernel_name,
+#endif
       Kokkos::RangePolicy<>(0,nbCellsPerBlock*nbOcts), 
       KOKKOS_LAMBDA( uint32_t index )
     {
